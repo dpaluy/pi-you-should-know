@@ -53,7 +53,9 @@ test("frames and pads the answer, with a separate padded follow-up area", () => 
   assert.ok(plain[0].startsWith("╭") && plain[0].endsWith("╮"));
   assert.ok(plain.at(-1)!.startsWith("╰") && plain.at(-1)!.endsWith("╯"));
   assert.ok(lines.every((line) => visibleWidth(line) === 60), "the frame closes at a fixed column");
-  assert.match(plain[1], /^│ +│$/, "blank top padding separates the content from the border");
+  assert.match(plain[1], /^│ +│$/, "blank top padding separates the title from the border");
+  assert.match(plain[2], /^│  YOU SHOULD KNOW +│$/, "the title is padded inside the frame");
+  assert.match(plain[3], /^│ +│$/, "blank space separates the title from the answer");
   const answer = plain.findIndex((line) => line.includes("Use the local result."));
   assert.ok(answer > 0);
   assert.ok(plain[answer].startsWith("│  ") && plain[answer].endsWith("  │"));
@@ -67,6 +69,7 @@ test("frames and pads the answer, with a separate padded follow-up area", () => 
   modal.scrollBy(10_000);
   const scrolled = modal.render(60).map(stripTerminalSequences);
   assert.deepEqual([scrolled[0], scrolled.find((line) => line.startsWith("├")), scrolled.at(-1)], frame);
+  assert.deepEqual(scrolled.slice(0, 4), plain.slice(0, 4), "scrolling keeps the title and its padding fixed");
 });
 
 test("keeps the frame within terminal bounds after narrow and short resizes", () => {
@@ -158,6 +161,10 @@ test("first-run model picker filters, uses native selection keys, and blocks bus
       const lines = harness.modal.render(width);
       assert.ok(lines.length <= Math.max(1, Math.floor(rows * 0.85)));
       assert.ok(lines.every((line) => visibleWidth(line) <= width));
+      if (rows === 30 && width === 60) {
+        assert.match(stripTerminalSequences(lines[1]), /^│ +│$/, "setup has padding above the title");
+        assert.match(stripTerminalSequences(lines[2]), /^│  YOU SHOULD KNOW +│$/, "setup uses the same title while busy");
+      }
     }
   }
   harness.modal.handleInput("\x1b"); harness.modal.handleInput("\r");

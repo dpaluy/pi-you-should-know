@@ -195,7 +195,9 @@ export class BriefingModal implements Component, Focusable {
       box.addChild({ render: () => lines, invalidate() {} });
       return box.render(frameWidth).map(row);
     };
-    const top = edge("╭", "╮", ` You should know · ${this.state.busy ? "Working" : this.state.setup ? "Setup" : "Private"} `);
+    const title = "YOU SHOULD KNOW";
+    const headingLines = paddingY ? [this.theme.fg("accent", title), ""] : [];
+    const top = edge("╭", "╮", paddingY ? "" : ` ${title} `);
     const bottom = edge("╰", "╯");
     const status = this.state.error
       ? this.theme.fg("error", this.state.error)
@@ -210,7 +212,7 @@ export class BriefingModal implements Component, Focusable {
     }
     if (this.state.setup) {
       const setup = this.state.setup;
-      const heading = [this.theme.fg("accent", truncateToWidth(setup.title, innerWidth, "…"))];
+      const heading = [...headingLines, this.theme.fg("accent", truncateToWidth(setup.title, innerWidth, "…"))];
       if (status) heading.push(truncateToWidth(status, innerWidth, "…"));
       if (setup.summary) heading.push(...new Markdown(setup.summary, 0, 0, getMarkdownTheme()).render(innerWidth));
       this.search.focused = this.focused;
@@ -237,14 +239,14 @@ export class BriefingModal implements Component, Focusable {
       ? [edge("├", "┤", " Follow-up "), ...padded([...inputLines, ...footerLines])]
       : [];
     const tail = inputLines.length ? [] : ["", ...footerLines];
-    const fixed = 2 + paddingY * 2 + statusLines.length + composer.length + tail.length;
+    const fixed = 2 + paddingY * 2 + headingLines.length + statusLines.length + composer.length + tail.length;
     const bodyHeight = Math.max(0, height - fixed);
     const bodyLines = this.content.render(innerWidth);
     this.scroll.updateLayout(bodyLines.length, bodyHeight, () => { if (!this.disposed) this.tui.requestRender(); });
     // ScrollView.render() supplies unbounded child lines. Apply its public viewport state
     // here because this custom overlay renders flat lines rather than a layout tree.
     const body = bodyHeight ? this.scroll.render(innerWidth).slice(this.scroll.scrollTop, this.scroll.scrollTop + bodyHeight) : [];
-    return [top, ...padded([...statusLines, ...body, ...tail]), ...composer, bottom];
+    return [top, ...padded([...headingLines, ...statusLines, ...body, ...tail]), ...composer, bottom];
   }
 
   private ensurePicker(rows: number): void {

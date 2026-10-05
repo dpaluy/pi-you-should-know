@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1 - 2026-10-05
+
+- Simplify the README into a practical guide, with an npm version badge and update commands.
+- Use `YOU SHOULD KNOW` as the modal title, with padding above it.
+
 ## 0.2.0 - 2026-10-05
 
 ### Added

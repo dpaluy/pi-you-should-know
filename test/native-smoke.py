@@ -130,15 +130,16 @@ with tempfile.TemporaryDirectory(prefix="ysk-native-") as temporary:
             assert saved == {"rankModel": "typesafe/jev-latest", "chatModel": "openai-codex/gpt-6-luna"}
         assert b"BRIEFING READY" in output, output[-3000:].decode(errors="replace")
         assert "╭".encode() in output and "╰".encode() in output, "modal border is missing"
+        assert b"YOU SHOULD KNOW" in output, "modal title is missing"
         assert b"Follow-up" in output, "separate follow-up input area is missing"
         assert b"Detail 30" not in output, "briefing is not a bounded viewport"
-        send(b"\x1b[6~" * 8)
+        send(b"\x1b[6~" * 32)
         assert b"Detail 30" in output, "Page Down did not expose the end of the briefing"
         send(b"why?\r")
-        send(b"\x1b[6~" * 8)
+        send(b"\x1b[6~" * 32)
         assert b"FOLLOWUP ONE COMPLETE" in output, "first streamed follow-up was not visible"
         send(b"what next?\r")
-        send(b"\x1b[6~" * 8)
+        send(b"\x1b[6~" * 32)
         assert b"FOLLOWUP TWO COMPLETE" in output, "second streamed follow-up was not visible"
         assert calls()[-1]["history"] == 2, "second follow-up lost private history"
         send(b"\x1b")

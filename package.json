@@ -1,6 +1,7 @@
 {
   "name": "pi-you-should-know",
-  "version": "0.2.0",
+  "version": "0.2.1",
+  "license": "MIT",
   "description": "An on-demand private session briefing and follow-up chat for Pi",
   "type": "module",
   "keywords": ["pi-package"],

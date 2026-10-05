@@ -74,7 +74,7 @@ async function fixture(configured = true) {
   extension(pi);
   const open = () => { const running = commands.get("ysk").handler("", ctx); assert.ok(opened); return running; };
   const text = () => { modal.scrollBy(-10_000); return modal.render(100).join("\n"); };
-  const ready = () => waitFor(() => !text().includes("Working") && !text().includes("Reading recent"));
+  const ready = () => waitFor(() => !/Working|Reading recent|Ranking and writing|Saving model settings/.test(text()));
   const ask = (question: string) => { for (const char of question) modal.handleInput(char); modal.handleInput("\r"); };
   return { dir, ctx, entries, calls, handlers, open, text, ready, ask, response,
     invoke: () => commands.get("ysk").handler("", ctx),
