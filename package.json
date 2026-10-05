@@ -1,0 +1,24 @@
+{
+  "name": "pi-you-should-know",
+  "version": "0.1.0",
+  "description": "An on-demand private session briefing and follow-up chat for Pi",
+  "type": "module",
+  "keywords": ["pi-package"],
+  "pi": { "extensions": ["./src/index.ts"] },
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "test:native": "python3 test/native-smoke.py",
+    "check": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.0.2",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0"
+  },
+  "engines": { "node": ">=22.19.0" }
+}
