@@ -1,23 +1,25 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { loadExtensions } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
 import extension from "../src/index.ts";
+import { DEFAULT_CONFIG } from "../src/briefing.ts";
 
 initTheme();
 const tick = () => new Promise<void>((done) => setImmediate(done));
 async function waitFor(predicate: () => boolean) {
-  for (let i = 0; i < 100; i++) { if (predicate()) return; await tick(); }
+  for (let i = 0; i < 1_000; i++) { if (predicate()) return; await tick(); }
   assert.fail("fixture did not settle");
 }
 const forbidden = () => { throw new Error("Main-session or persistent UI mutation forbidden"); };
-async function fixture() {
+async function fixture(configured = true) {
   const dir = await mkdtemp(join(tmpdir(), "ysk-integration-"));
   const old = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = dir;
+  if (configured) await writeFile(join(dir, "you-should-know.json"), JSON.stringify(DEFAULT_CONFIG));
   const entries: any[] = [
     { id: "u", type: "message", message: { role: "user", content: "Decide a route" } },
     { id: "a", type: "message", message: { role: "assistant", content: [{ type: "text", text: "Use the local route. Remote verification remains unavailable." }] } },
@@ -49,6 +51,10 @@ async function fixture() {
       },
     },
     modelRegistry: {
+      getProviderAuthStatus: () => ({ configured: true }),
+      getModelsOfType: (type: string) => type === "classifier"
+        ? [{ type, provider: "typesafe", id: "jev-latest" }, { type, provider: "fixture", id: "other-rank" }]
+        : [{ type, provider: "openai", id: "gpt-6-luna" }, { type, provider: "openai-codex", id: "gpt-6-luna" }, { type, provider: "fixture", id: "other-chat" }],
       findOfType: (_: string, provider: string, id: string) => id === "missing" ? undefined : { type: "classifier", provider, id },
       find: (provider: string, id: string) => id === "missing" ? undefined : { type: "chat", provider, id },
       classify: async (model: any, args: any, options: any) => {
@@ -141,6 +147,101 @@ test("two completed follow-ups retain private quoted context without reranking o
   } finally { await f.cleanup(); }
 });
 
+test("first-run setup saves chosen models, calls nothing before confirmation, and does not repeat", async () => {
+  const f = await fixture(false);
+  try {
+    const original = structuredClone(f.entries);
+    let opening = f.open(); await f.ready();
+    assert.match(f.text(), /1\/3/);
+    assert.equal(f.calls.length, 0);
+    await assert.rejects(readFile(join(f.dir, "you-should-know.json")), { code: "ENOENT" });
+    f.ask("jev-latest");
+    assert.match(f.text(), /2\/3/);
+    f.ask("openai-codex/gpt-6-luna");
+    assert.match(f.text(), /3\/3/);
+    assert.equal(f.calls.length, 0);
+    f.ask(""); await f.ready();
+    const stored = JSON.parse(await readFile(join(f.dir, "you-should-know.json"), "utf8"));
+    assert.deepEqual(stored, { rankModel: "typesafe/jev-latest", chatModel: "openai-codex/gpt-6-luna" });
+    assert.equal(f.calls.length, 2);
+    assert.equal(f.calls.at(-1).model.provider, "openai-codex");
+    assert.deepEqual(f.entries, original);
+    f.close(); await opening;
+    opening = f.open(); await f.ready();
+    assert.doesNotMatch(f.text(), /1\/3/);
+    assert.equal(f.calls.length, 2);
+    assert.deepEqual(JSON.parse(await readFile(join(f.dir, "you-should-know.json"), "utf8")), stored);
+    f.close(); await opening;
+  } finally { await f.cleanup(); }
+});
+
+test("setup keeps concurrently created settings without making calls with unconfirmed models", async () => {
+  const f = await fixture(false);
+  try {
+    const opening = f.open(); await f.ready();
+    f.ask("jev-latest"); f.ask("openai-codex/gpt-6-luna");
+    await writeFile(join(f.dir, "you-should-know.json"), JSON.stringify(DEFAULT_CONFIG));
+    f.ask(""); await f.ready();
+    assert.match(f.text(), /Another session/);
+    assert.equal(f.calls.length, 0);
+    assert.deepEqual(JSON.parse(await readFile(join(f.dir, "you-should-know.json"), "utf8")), DEFAULT_CONFIG);
+    f.close(); await opening;
+  } finally { await f.cleanup(); }
+});
+
+test("model-catalog setup errors do not reveal raw provider details", async () => {
+  const f = await fixture(false);
+  try {
+    const opening = f.open(); await f.ready();
+    f.ctx.modelRegistry.getModelsOfType = () => { throw new Error("secret-api-key and raw provider body"); };
+    f.ask("jev-latest");
+    assert.match(f.text(), /YSK request failed/);
+    assert.doesNotMatch(f.text(), /secret-api-key|raw provider body/);
+    assert.equal(f.calls.length, 0);
+    f.close(); await opening;
+  } finally { await f.cleanup(); }
+});
+
+test("cancelling setup or switching session saves nothing and makes no model calls", async () => {
+  for (const stage of [0, 1, 2]) {
+    const f = await fixture(false);
+    try {
+      const opening = f.open(); await f.ready();
+      if (stage >= 1) f.ask("jev-latest");
+      if (stage >= 2) f.ask("openai-codex/gpt-6-luna");
+      if (stage === 1) await f.handlers.get("session_tree")!({}, f.ctx);
+      else f.close();
+      await opening;
+      assert.equal(f.calls.length, 0);
+      await assert.rejects(readFile(join(f.dir, "you-should-know.json")), { code: "ENOENT" });
+    } finally { await f.cleanup(); }
+  }
+});
+
+test("setup works in an empty session and saved settings survive missing credentials", async () => {
+  const f = await fixture(false);
+  try {
+    f.entries.length = 0;
+    let opening = f.open(); await f.ready();
+    assert.match(f.text(), /1\/3/);
+    f.ask("jev-latest"); f.ask("openai-codex/gpt-6-luna"); f.ask(""); await f.ready();
+    assert.match(f.text(), /No session output/);
+    assert.equal(f.calls.length, 0);
+    f.close(); await opening;
+    f.entries.push({ id: "a", type: "message", message: { role: "assistant", content: "A decision" } });
+    f.ctx.modelRegistry.getProviderAuthStatus = () => ({ configured: false });
+    opening = f.open(); await f.ready();
+    assert.match(f.text(), /credentials are missing/);
+    assert.equal(f.calls.length, 0);
+    f.close(); await opening;
+    f.ctx.modelRegistry.getProviderAuthStatus = () => ({ configured: true });
+    opening = f.open(); await f.ready();
+    assert.equal(f.calls.length, 2);
+    assert.doesNotMatch(f.text(), /1\/3/);
+    f.close(); await opening;
+  } finally { await f.cleanup(); }
+});
+
 test("empty and non-TUI contexts never call providers or notifications", async () => {
   const f = await fixture();
   try {
@@ -160,7 +261,7 @@ test("config, missing model, malformed rank and authentication failures remain s
       await writeFile(join(f.dir, "you-should-know.json"), contents);
       const opening = f.open(); await f.ready(); assert.match(f.text(), /YSK/); assert.equal(f.calls.length, 0); f.close(); await opening;
     }
-    await rm(join(f.dir, "you-should-know.json"));
+    await writeFile(join(f.dir, "you-should-know.json"), JSON.stringify(DEFAULT_CONFIG));
     f.setRank(async () => ({ stopReason: "stop", answers: {} }));
     let opening = f.open(); await f.ready(); assert.match(f.text(), /invalid score/); f.close(); await opening;
     f.setRank(async () => { throw new Error("secret-api-key and raw provider body"); });

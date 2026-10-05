@@ -1,10 +1,21 @@
 {
   "name": "pi-you-should-know",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "An on-demand private session briefing and follow-up chat for Pi",
   "type": "module",
   "keywords": ["pi-package"],
-  "pi": { "extensions": ["./src/index.ts"] },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dpaluy/pi-you-should-know.git"
+  },
+  "homepage": "https://github.com/dpaluy/pi-you-should-know#readme",
+  "bugs": { "url": "https://github.com/dpaluy/pi-you-should-know/issues" },
+  "files": ["src/", "CHANGELOG.md", "ysk-preview.png"],
+  "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" },
+  "pi": {
+    "extensions": ["./src/index.ts"],
+    "image": "https://raw.githubusercontent.com/dpaluy/pi-you-should-know/master/ysk-preview.png"
+  },
   "scripts": {
     "test": "node --experimental-strip-types --test test/*.test.ts",
     "test:native": "python3 test/native-smoke.py",

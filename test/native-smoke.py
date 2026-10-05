@@ -21,6 +21,7 @@ export default function(pi) {
   globalThis.fetch = async () => { throw new Error("Network forbidden in native smoke fixture"); };
   pi.on("session_start", (_event, ctx) => {
     const save = () => writeFile(process.env.YSK_FIXTURE_METRICS, JSON.stringify(calls));
+    ctx.modelRegistry.getProviderAuthStatus = () => ({ configured: true });
     ctx.modelRegistry.classify = async (_model, input, options) => {
       calls.push({ stage: "rank", questions: Object.keys(input.questions), retries: options.maxRetries });
       await save();
@@ -116,6 +117,17 @@ with tempfile.TemporaryDirectory(prefix="ysk-native-") as temporary:
         original_session = session.read_bytes()
         assert not calls(), "provider calls before /ysk"
         send(b"/ysk\r", 1)
+        if not config_path:
+            assert b"1/3" in output, "first-run model setup did not open"
+            assert not calls(), "model calls before selecting models"
+            send(b"jev-latest\r")
+            assert b"2/3" in output, "ranking choice did not advance setup"
+            send(b"openai-codex/gpt-6-luna\r")
+            assert b"3/3" in output, "chat choice did not reach save confirmation"
+            assert not calls(), "model calls before confirming setup"
+            send(b"\r", 1)
+            saved = json.loads((agent / "you-should-know.json").read_text())
+            assert saved == {"rankModel": "typesafe/jev-latest", "chatModel": "openai-codex/gpt-6-luna"}
         assert b"BRIEFING READY" in output, output[-3000:].decode(errors="replace")
         assert "╭".encode() in output and "╰".encode() in output, "modal border is missing"
         assert b"Follow-up" in output, "separate follow-up input area is missing"
@@ -144,7 +156,8 @@ with tempfile.TemporaryDirectory(prefix="ysk-native-") as temporary:
         assert len([call for call in calls() if call["stage"] == "rank"]) == 1
         assert calls()[0]["retries"] == 0
         send(b"\x04")
-        print(f"PASS installed-package discovery on Pi {version}: ranked briefing, keyboard scrolling, two streamed follow-ups, cache reopen, ignored-abort close, unchanged session; local fixtures only")
+        setup_check = "existing configuration" if config_path else "first-run model setup and automatic configuration save"
+        print(f"PASS installed-package discovery on Pi {version}: {setup_check}, ranked briefing, keyboard scrolling, two streamed follow-ups, cache reopen, ignored-abort close, unchanged session; local fixtures only")
     finally:
         if process.poll() is None:
             process.terminate()

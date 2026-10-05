@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { ClassifierApi, ClassifierModel, Message, Model } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
@@ -51,13 +52,13 @@ function isModelId(value: unknown): value is string {
   return slash > 0 && slash < value.length - 1 && !/[\s/]/.test(value.slice(0, slash)) && !/[\s]/.test(value.slice(slash + 1));
 }
 
-/** Read the personal config; only a missing file selects the documented defaults. */
-export async function loadConfig(path: string): Promise<BriefingConfig> {
+/** A missing file requires first-run setup. Existing partial settings retain their defaults. */
+export async function loadConfig(path: string): Promise<BriefingConfig | undefined> {
   let raw: string;
   try {
     raw = await readFile(path, "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ...DEFAULT_CONFIG };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw new Error("YSK configuration could not be read.");
   }
   let parsed: unknown;
@@ -69,6 +70,29 @@ export async function loadConfig(path: string): Promise<BriefingConfig> {
   const chatModel = input.chatModel === undefined ? DEFAULT_CONFIG.chatModel : input.chatModel;
   if (!isModelId(rankModel) || !isModelId(chatModel)) throw new Error("YSK model settings must use provider/model-id values.");
   return { rankModel, chatModel };
+}
+
+/** Publish a complete configuration without overwriting another session's settings. */
+export async function saveConfig(path: string, config: BriefingConfig, signal: AbortSignal): Promise<BriefingConfig> {
+  let temp: string | undefined;
+  try {
+    abortIfNeeded(signal);
+    await mkdir(dirname(path), { recursive: true });
+    temp = await mkdtemp(join(dirname(path), ".ysk-setup-"));
+    const staged = join(temp, "config.json");
+    await writeFile(staged, JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });
+    abortIfNeeded(signal);
+    try { await link(staged, path); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    const stored = await loadConfig(path);
+    if (!stored) throw new Error("YSK configuration could not be saved.");
+    return stored;
+  } catch {
+    if (signal.aborted) throw new Error("YSK request was cancelled.");
+    throw new Error("YSK configuration could not be saved. Check the configuration directory permissions.");
+  } finally {
+    if (temp) await rm(temp, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 function textOf(content: unknown): string {

@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { answerFollowUp, DEFAULT_CONFIG, generateBriefing, loadConfig, resolveModels, snapshot, MAX_CHARS, type EvidenceSnapshot } from "../src/briefing.ts";
+import { answerFollowUp, DEFAULT_CONFIG, generateBriefing, loadConfig, saveConfig, resolveModels, snapshot, MAX_CHARS, type EvidenceSnapshot } from "../src/briefing.ts";
 import { transformMessages } from "../node_modules/@earendil-works/pi-ai/dist/api/transform-messages.js";
 import { classifySystemOne } from "../node_modules/@earendil-works/pi-ai/dist/api/system-one-shared.js";
 
@@ -19,10 +19,10 @@ const evidence: EvidenceSnapshot = Object.freeze({
   groups: Object.freeze([{ id: "g1", truncated: false, text: "decision: use immutable snapshot", items: Object.freeze([]) }]),
 });
 
- test("loads defaults only for missing config and validates fields", async () => {
+ test("detects missing configuration for setup and validates existing settings", async () => {
   const dir = await mkdtemp(join(tmpdir(), "ysk-config-"));
   try {
-    assert.deepEqual(await loadConfig(join(dir, "absent.json")), DEFAULT_CONFIG);
+    assert.equal(await loadConfig(join(dir, "absent.json")), undefined);
     const path = join(dir, "config.json");
     await writeFile(path, JSON.stringify({ rankModel: "typesafe/jev-latest", chatModel: "openai/gpt-6-luna" }));
     assert.deepEqual(await loadConfig(path), DEFAULT_CONFIG);
@@ -32,6 +32,27 @@ const evidence: EvidenceSnapshot = Object.freeze({
     await assert.rejects(loadConfig(path), /provider\/model-id/);
     await writeFile(path, JSON.stringify({ hidden: true }));
     await assert.rejects(loadConfig(path), /unknown setting/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("setup publishes complete private settings without overwriting an existing configuration", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ysk-save-"));
+  const file = join(dir, "agent", "you-should-know.json");
+  const selected = { rankModel: "typesafe/jev-latest", chatModel: "openai-codex/gpt-6-luna" };
+  try {
+    assert.deepEqual(await saveConfig(file, selected, new AbortController().signal), selected);
+    assert.deepEqual(await loadConfig(file), selected);
+    const original = await readFile(file, "utf8");
+    assert.deepEqual(await saveConfig(file, DEFAULT_CONFIG, new AbortController().signal), selected);
+    assert.equal(await readFile(file, "utf8"), original);
+    if (process.platform !== "win32") assert.equal((await stat(file)).mode & 0o777, 0o600);
+    assert.deepEqual(await readdir(join(dir, "agent")), ["you-should-know.json"]);
+    const aborted = new AbortController(); aborted.abort();
+    await assert.rejects(saveConfig(join(dir, "cancelled.json"), selected, aborted.signal), /cancelled/);
+    await assert.rejects(readFile(join(dir, "cancelled.json")), { code: "ENOENT" });
+    const blocker = join(dir, "not-a-directory");
+    await writeFile(blocker, "file");
+    await assert.rejects(saveConfig(join(blocker, "settings.json"), selected, new AbortController().signal), /permissions/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

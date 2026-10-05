@@ -8,6 +8,7 @@ initTheme();
 
 function makeModal(initial: ModalState = { status: "Reading recent session...", busy: true }) {
   let submitted: string[] = [];
+  const configured: string[] = [];
   let cancelled = 0;
   let completed = 0;
   let renders = 0;
@@ -21,9 +22,10 @@ function makeModal(initial: ModalState = { status: "Reading recent session...", 
   const keybindings = { matches: () => false } as unknown as KeybindingsManager;
   const modal = new BriefingModal(tui, theme, keybindings, () => { completed++; }, {
     onSubmit: (question) => submitted.push(question),
+    onSetupSelect: (value) => configured.push(value),
     onCancel: () => { cancelled++; },
   }, initial);
-  return { modal, tui, submitted, get cancelled() { return cancelled; }, get completed() { return completed; }, get renders() { return renders; } };
+  return { modal, tui, submitted, configured, get cancelled() { return cancelled; }, get completed() { return completed; }, get renders() { return renders; } };
 }
 
 test("renders the private status and briefing in narrow and short terminal bounds", () => {
@@ -128,6 +130,38 @@ test("scrolls native scroll view and refreshes rendering", () => {
   harness.modal.handleMouse({ type: "wheel", button: "none", x: 1, y: 3, screenX: 1, screenY: 3, width: 40, height: 15, shift: false, ctrl: false, alt: false, wheelDelta: 8 });
   assert.doesNotMatch(harness.modal.render(40).join("\n"), /Line 1\b/);
   assert.ok(harness.renders >= 2);
+});
+
+test("first-run model picker filters, uses native selection keys, and blocks busy submissions", () => {
+  const setup = { title: "Ranking model", items: [
+    { value: "typesafe/jev-latest", label: "typesafe/jev-latest" },
+    { value: "fixture/other", label: "fixture/other" },
+  ] };
+  const harness = makeModal({ setup });
+  const initial = harness.modal.render(60);
+  assert.ok(initial.some((line) => line.includes(CURSOR_MARKER)), "search has native input focus");
+  harness.modal.handleInput("\x1b[B"); harness.modal.handleInput("\r");
+  assert.deepEqual(harness.configured, ["fixture/other"]);
+  for (const character of "jev") harness.modal.handleInput(character);
+  const filtered = harness.modal.render(60).join("\n");
+  assert.match(filtered, /jev-latest/);
+  assert.doesNotMatch(filtered, /fixture\/other/);
+  harness.modal.handleInput("\r");
+  assert.deepEqual(harness.configured, ["fixture/other", "typesafe/jev-latest"]);
+  assert.deepEqual(harness.submitted, [], "setup input cannot become a follow-up question");
+  harness.modal.update({ setup, busy: true });
+  harness.modal.handleInput("\r");
+  assert.equal(harness.configured.length, 2);
+  for (const rows of [4, 9, 15, 30]) {
+    (harness.tui.terminal as unknown as { rows: number }).rows = rows;
+    for (const width of [2, 13, 40, 60]) {
+      const lines = harness.modal.render(width);
+      assert.ok(lines.length <= Math.max(1, Math.floor(rows * 0.85)));
+      assert.ok(lines.every((line) => visibleWidth(line) <= width));
+    }
+  }
+  harness.modal.handleInput("\x1b"); harness.modal.handleInput("\r");
+  assert.equal(harness.configured.length, 2);
 });
 
 test("Escape closes once and disposed callbacks cannot submit or refresh", () => {

@@ -4,6 +4,8 @@ import {
   Input,
   Markdown,
   ScrollView,
+  SelectList,
+  type SelectItem,
   type Component,
   type Focusable,
   type KeybindingsManager,
@@ -21,12 +23,20 @@ export interface ModalState {
   readonly discussion?: readonly { role: "user" | "assistant"; text: string }[];
   readonly error?: string;
   readonly empty?: boolean;
+  readonly notice?: string;
   readonly busy?: boolean;
+  readonly setup?: {
+    readonly title: string;
+    readonly items: readonly SelectItem[];
+    readonly summary?: string;
+    readonly searchable?: boolean;
+  };
 }
 
 export interface ModalCallbacks {
   onSubmit(question: string): void;
   onCancel(): void;
+  onSetupSelect?(value: string): void;
 }
 
 /** Private, controller-driven TUI view for /ysk. It makes no provider or session calls. */
@@ -35,6 +45,11 @@ export class BriefingModal implements Component, Focusable {
   private state: ModalState;
   private disposed = false;
   private readonly input = new Input({ prompt: "› ", placeholder: "Ask about this briefing..." });
+  private readonly search = new Input({ prompt: "Find: ", placeholder: "model or provider" });
+  private picker?: SelectList;
+  private pickerItems?: readonly SelectItem[];
+  private pickerFilter = "";
+  private pickerRows = 0;
   private readonly content: Markdown;
   private readonly scroll: ScrollView;
   private readonly tui: TUI;
@@ -64,6 +79,7 @@ export class BriefingModal implements Component, Focusable {
 
   update(state: ModalState): void {
     if (this.disposed) return;
+    if (state.setup?.items !== this.state.setup?.items) this.search.setValue("");
     this.state = { ...state, discussion: state.discussion ? [...state.discussion] : [] };
     this.content.setText(this.bodyText());
     this.invalidate();
@@ -99,6 +115,8 @@ export class BriefingModal implements Component, Focusable {
     if (this.disposed) return;
     this.disposed = true;
     this.input.focused = false;
+    this.search.focused = false;
+    this.picker = undefined;
     this.scroll.setScrollbar("hidden");
   }
 
@@ -106,12 +124,28 @@ export class BriefingModal implements Component, Focusable {
     this.content.invalidate();
     this.scroll.invalidate();
     this.input.invalidate();
+    this.search.invalidate();
+    this.picker?.invalidate();
   }
 
   handleInput(data: string): void {
     if (this.disposed) return;
     if (matchesKey(data, "escape") || this.keybindings.matches(data, "tui.select.cancel")) {
       this.close();
+      return;
+    }
+    if (this.state.setup) {
+      if (this.state.busy) return;
+      this.ensurePicker(Math.max(1, this.pickerRows));
+      if (matchesKey(data, "enter") || matchesKey(data, "up") || matchesKey(data, "down") ||
+        this.keybindings.matches(data, "tui.select.confirm") || this.keybindings.matches(data, "tui.select.up") || this.keybindings.matches(data, "tui.select.down")) {
+        this.picker?.handleInput(data);
+      } else if (this.state.setup.searchable !== false) {
+        this.search.focused = this.focused;
+        this.search.handleInput(data);
+        this.ensurePicker(Math.max(1, this.pickerRows));
+      }
+      this.tui.requestRender();
       return;
     }
     if (matchesKey(data, "pageUp") || this.keybindings.matches(data, "tui.editor.pageUp")) {
@@ -128,6 +162,10 @@ export class BriefingModal implements Component, Focusable {
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
     if (this.disposed) return;
+    if (this.state.setup) {
+      if (event.type !== "wheel" || this.state.busy) return;
+      return this.picker?.handleMouse(event);
+    }
     if (event.type === "wheel") {
       this.scrollBy(event.wheelDelta ?? 0);
       return { handled: true };
@@ -157,7 +195,7 @@ export class BriefingModal implements Component, Focusable {
       box.addChild({ render: () => lines, invalidate() {} });
       return box.render(frameWidth).map(row);
     };
-    const top = edge("╭", "╮", ` You should know · ${this.state.busy ? "Working" : "Private"} `);
+    const top = edge("╭", "╮", ` You should know · ${this.state.busy ? "Working" : this.state.setup ? "Setup" : "Private"} `);
     const bottom = edge("╰", "╯");
     const status = this.state.error
       ? this.theme.fg("error", this.state.error)
@@ -169,6 +207,20 @@ export class BriefingModal implements Component, Focusable {
     if (height <= 6) {
       const content = status || this.content.render(frameWidth)[0] || "";
       return height === 1 ? [top] : height === 2 ? [top, bottom] : [top, row(content), bottom];
+    }
+    if (this.state.setup) {
+      const setup = this.state.setup;
+      const heading = [this.theme.fg("accent", truncateToWidth(setup.title, innerWidth, "…"))];
+      if (status) heading.push(truncateToWidth(status, innerWidth, "…"));
+      if (setup.summary) heading.push(...new Markdown(setup.summary, 0, 0, getMarkdownTheme()).render(innerWidth));
+      this.search.focused = this.focused;
+      const filter = setup.searchable !== false ? [this.search.render(innerWidth)[0], ""] : [];
+      const footer = ["", this.theme.fg("muted", truncateToWidth("↑/↓ choose · Enter confirms · Escape cancels", innerWidth, "…"))];
+      const available = Math.max(1, height - 2 - paddingY * 2 - heading.length - filter.length - footer.length);
+      this.ensurePicker(Math.max(1, Math.min(7, available - 1)));
+      const items = this.picker!.render(innerWidth).slice(0, available);
+      const content = [...heading, ...filter, ...items, ...footer].slice(0, height - 2 - paddingY * 2);
+      return [top, ...padded(content), bottom];
     }
     const statusLines = status ? [truncateToWidth(status, innerWidth, "…")] : [];
     if (status && height >= 10) statusLines.push("");
@@ -195,8 +247,31 @@ export class BriefingModal implements Component, Focusable {
     return [top, ...padded([...statusLines, ...body, ...tail]), ...composer, bottom];
   }
 
+  private ensurePicker(rows: number): void {
+    const setup = this.state.setup;
+    if (!setup) return;
+    const filter = this.search.getValue().toLowerCase().trim();
+    if (this.picker && this.pickerItems === setup.items && this.pickerFilter === filter && this.pickerRows === rows) return;
+    const previous = this.pickerItems === setup.items ? this.picker?.getSelectedItem()?.value : undefined;
+    const items = setup.items.filter((item) => `${item.value} ${item.label}`.toLowerCase().includes(filter));
+    this.picker = new SelectList(items, rows, {
+      selectedPrefix: (text) => this.theme.fg("accent", text),
+      selectedText: (text) => this.theme.fg("accent", text),
+      description: (text) => this.theme.fg("muted", text),
+      scrollInfo: (text) => this.theme.fg("muted", text),
+      noMatch: () => this.theme.fg("muted", "No matching models"),
+    }, { minPrimaryColumnWidth: 40 });
+    if (previous && this.pickerFilter === filter) this.picker.setSelectedIndex(Math.max(0, items.findIndex((item) => item.value === previous)));
+    this.picker.onSelect = (item) => { if (!this.disposed && !this.state.busy) this.callbacks.onSetupSelect?.(item.value); };
+    this.picker.onSelectionChange = () => { if (!this.disposed) this.tui.requestRender(); };
+    this.pickerItems = setup.items;
+    this.pickerFilter = filter;
+    this.pickerRows = rows;
+  }
+
   private bodyText(): string {
     const sections: string[] = [];
+    if (this.state.notice) sections.push(this.state.notice);
     if (this.state.briefing) sections.push(this.state.briefing);
     for (const turn of this.state.discussion ?? []) {
       sections.push(`**${turn.role === "user" ? "You" : "YSK"}**\n\n${turn.text}`);
