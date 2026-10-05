@@ -117,6 +117,8 @@ with tempfile.TemporaryDirectory(prefix="ysk-native-") as temporary:
         assert not calls(), "provider calls before /ysk"
         send(b"/ysk\r", 1)
         assert b"BRIEFING READY" in output, output[-3000:].decode(errors="replace")
+        assert "╭".encode() in output and "╰".encode() in output, "modal border is missing"
+        assert b"Follow-up" in output, "separate follow-up input area is missing"
         assert b"Detail 30" not in output, "briefing is not a bounded viewport"
         send(b"\x1b[6~" * 8)
         assert b"Detail 30" in output, "Page Down did not expose the end of the briefing"

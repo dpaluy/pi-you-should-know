@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CURSOR_MARKER, type KeybindingsManager, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, type KeybindingsManager, type TUI, visibleWidth, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { BriefingModal, type ModalState } from "../src/modal.ts";
 
@@ -27,17 +27,60 @@ function makeModal(initial: ModalState = { status: "Reading recent session...", 
 }
 
 test("renders the private status and briefing in narrow and short terminal bounds", () => {
-  const { modal, tui } = makeModal({ briefing: "# Key point\n\nA useful discovery.", discussion: [], status: "Ready" });
+  const { modal, tui } = makeModal({ briefing: "# Point\n\nA useful discovery.", discussion: [], status: "Ready" });
   const narrow = modal.render(13);
   assert.ok(narrow.length <= 15);
   assert.ok(narrow.every((line) => visibleWidth(line) <= 13));
-  assert.ok(narrow.join("\n").includes("Key point"));
+  assert.ok(narrow.join("\n").includes("Point"));
   assert.ok(narrow.some((line) => line.includes(CURSOR_MARKER)), "focused input emits the native cursor marker");
   modal.update({ empty: true });
   (tui.terminal as unknown as { rows: number }).rows = 4;
   const short = modal.render(20);
   assert.ok(short.length <= 4);
   assert.ok(short.join("\n").includes("No session"));
+});
+
+test("frames and pads the answer, with a separate padded follow-up area", () => {
+  const { modal, tui } = makeModal({
+    briefing: "Short briefing.",
+    discussion: [{ role: "user", text: "Why?" }, { role: "assistant", text: "Use the local result." }],
+  });
+  (tui.terminal as unknown as { rows: number }).rows = 30;
+  const lines = modal.render(60);
+  const plain = lines.map(stripTerminalSequences);
+  assert.ok(plain[0].startsWith("╭") && plain[0].endsWith("╮"));
+  assert.ok(plain.at(-1)!.startsWith("╰") && plain.at(-1)!.endsWith("╯"));
+  assert.ok(lines.every((line) => visibleWidth(line) === 60), "the frame closes at a fixed column");
+  assert.match(plain[1], /^│ +│$/, "blank top padding separates the content from the border");
+  const answer = plain.findIndex((line) => line.includes("Use the local result."));
+  assert.ok(answer > 0);
+  assert.ok(plain[answer].startsWith("│  ") && plain[answer].endsWith("  │"));
+  const divider = plain.findIndex((line) => line.startsWith("├") && line.includes("Follow-up"));
+  assert.ok(divider > answer, "the answer stays above the follow-up separator");
+  assert.ok(plain.slice(answer + 1, divider).some((line) => /^│ +│$/.test(line)), "blank space follows the answer");
+  assert.match(plain[divider + 1], /^│ +│$/, "blank space separates the divider and input");
+  assert.ok(lines[divider + 2].includes(CURSOR_MARKER), "the padded input preserves the native cursor");
+  assert.match(plain[divider + 2], /^│  › /);
+  const frame = [plain[0], plain[divider], plain.at(-1)];
+  modal.scrollBy(10_000);
+  const scrolled = modal.render(60).map(stripTerminalSequences);
+  assert.deepEqual([scrolled[0], scrolled.find((line) => line.startsWith("├")), scrolled.at(-1)], frame);
+});
+
+test("keeps the frame within terminal bounds after narrow and short resizes", () => {
+  const { modal, tui } = makeModal({ briefing: "界 wide characters and a long response ".repeat(30), status: "Ready" });
+  for (const rows of [1, 4, 6, 9, 15, 30]) {
+    (tui.terminal as unknown as { rows: number }).rows = rows;
+    for (const width of [1, 2, 5, 13, 40, 60]) {
+      const lines = modal.render(width);
+      assert.ok(lines.length <= Math.max(1, Math.floor(rows * 0.85)), `height at ${width}x${rows}`);
+      assert.ok(lines.every((line) => visibleWidth(line) <= width), `width at ${width}x${rows}`);
+      if (width >= 3 && lines.length >= 2) {
+        const last = stripTerminalSequences(lines.at(-1)!);
+        assert.ok(last.startsWith("╰") && last.endsWith("╯"), "bottom border survives clipping");
+      }
+    }
+  }
 });
 
 test("uses native input to submit only nonempty questions when a briefing is ready", () => {
@@ -64,6 +107,12 @@ test("scrolls native scroll view and refreshes rendering", () => {
   const moved = harness.modal.render(40).join("\n");
   assert.ok(harness.modal.scrollTop > 0, "native ScrollView advances its viewport");
   assert.notEqual(moved, top, "scrolling changes the visible content, not only the counter");
+  const fixedControls = (view: string) => {
+    const lines = view.split("\n");
+    const divider = lines.findIndex((line) => stripTerminalSequences(line).startsWith("├"));
+    return [lines[0], ...lines.slice(divider)];
+  };
+  assert.deepEqual(fixedControls(moved), fixedControls(top), "scrolling leaves the frame and follow-up controls in place");
   assert.doesNotMatch(moved, /Line 1\b/);
   assert.equal(harness.modal.render(40).length <= 15, true);
   harness.modal.scrollBy(-10_000);
